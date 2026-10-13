@@ -1,0 +1,13 @@
+{
+  "name": "radio105-lavalink",
+  "version": "1.0.0-penitenza",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.14.1",
+    "erela.js": "^2.4.0",
+    "dotenv": "^16.3.1"
+  }
+}
