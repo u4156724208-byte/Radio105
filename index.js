@@ -1,97 +1,106 @@
 
 const { Client, GatewayIntentBits } = require('discord.js');
-const { Manager } = require('erela.js');
-const http = require('http');
-require('dotenv').config();
+const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, VoiceConnectionStatus, entersState, NoSubscriberBehavior } = require('@discordjs/voice');
+const express = require('express');
 
-const TOKEN = process.env.DISCORD_TOKEN;
-const GUILD_ID = process.env.GUILD_ID;
-const CHANNEL_ID = process.env.VOICE_CHANNEL_ID;
+const app = express();
 const PORT = process.env.PORT || 10000;
 
-http.createServer((req,res)=>res.end('Lavalink bot live')).listen(PORT,()=>console.log('keepalive '+PORT));
+// Server per UptimeRobot - DEVE rispondere 200
+app.get('/', (req, res) => {
+  res.status(200).send('Radio 105 ON - UptimeRobot OK - ' + new Date().toISOString());
+});
+app.listen(PORT, () => console.log(`Keepalive server ON port ${PORT} for UptimeRobot`));
 
-const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates, GatewayIntentBits.GuildMessages] });
+const TOKEN = process.env.DISCORD_TOKEN || process.env.TOKEN;
+const GUILD_ID = process.env.GUILD_ID || '1422364839946223698';
+const VOICE_CHANNEL_ID = process.env.VOICE_CHANNEL_ID || '1554283481410965585';
 
-// Usa un nodo Lavalink pubblico gratis - non devi hostarlo tu
-const nodes = [
-  {
-    identifier: 'main',
-    host: 'lavalink-v4.derock.dev',
-    port: 443,
-    password: 'youshallnotpass',
-    secure: true,
-    retryAmount: 20,
-    retryDelay: 5000
-  }
+const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates] });
+
+const RADIO_URLS = [
+  'https://ice05.fluidstream.net/R105.aac',
+  'https://icecast.105.net/105.mp3',
+  'http://icecast.unitedradio.it/Radio105.mp3'
 ];
 
-const manager = new Manager({
-  nodes,
-  send: (id, payload) => {
-    const guild = client.guilds.cache.get(id);
-    if (guild) guild.shard.send(payload);
-  }
-});
+let current = 0;
+let connection = null;
+let player = null;
 
-client.on('raw', d => manager.updateVoiceState(d));
+async function startRadio() {
+  try {
+    const guild = await client.guilds.fetch(GUILD_ID);
+    console.log(`[RENDER] Guild: ${guild.name}`);
 
-async function startRadio(){
-  try{
-    const guildId = GUILD_ID;
-    const voiceChannel = CHANNEL_ID;
-    console.log('Cerco player per', guildId, voiceChannel);
-    let player = manager.players.get(guildId);
-    if(player) player.destroy();
-    
-    player = manager.create({
-      guild: guildId,
-      voiceChannel: voiceChannel,
-      textChannel: voiceChannel, // non usato ma richiesto
-      selfDeafen: false
+    connection = joinVoiceChannel({
+      channelId: VOICE_CHANNEL_ID,
+      guildId: GUILD_ID,
+      adapterCreator: guild.voiceAdapterCreator,
+      selfDeaf: false,
+      selfMute: false
     });
-    player.connect();
-    console.log('Connesso a vocale, cerco stream 105...');
-    
-    // Radio 105 URL diretto che Lavalink digerisce
-    const res = await manager.search('http://icecast.unitedradio.it/Radio105.mp3', { requester: client.user });
-    console.log('Search result', res.loadType, res.tracks?.length);
-    
-    if(res.loadType === 'LOAD_FAILED' || res.loadType === 'NO_MATCHES'){
-      console.log('Provo fallback url https...');
-      const res2 = await manager.search('https://icecast.105.net/105.mp3', { requester: client.user });
-      if(res2.tracks.length > 0){
-        player.queue.add(res2.tracks[0]);
-        player.play();
-        console.log('[OK] RADIO 105 ON AIR - LAVALINK');
-        return;
+
+    player = createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Play } });
+    connection.subscribe(player);
+
+    const play = () => {
+      const url = RADIO_URLS[current];
+      console.log(`[RADIO] Play ${url}`);
+      try {
+        const resource = createAudioResource(url, { inlineVolume: false });
+        player.play(resource);
+        console.log(`[OK] RADIO 105 ON AIR - ${url}`);
+      } catch (e) {
+        console.error('[PLAY ERROR]', e.message);
+        current = (current + 1) % RADIO_URLS.length;
+        setTimeout(play, 3000);
       }
-      throw new Error('Nessun stream trovato');
-    }
-    
-    player.queue.add(res.tracks[0]);
-    player.play();
-    console.log('[OK] RADIO 105 ON AIR - LAVALINK v1.0');
-    
-  }catch(e){
-    console.error('Lavalink error', e.message);
+    };
+
+    player.on(AudioPlayerStatus.Idle, () => {
+      console.log('[PLAYER] Idle -> replay');
+      play();
+    });
+
+    player.on('error', (e) => {
+      console.error('[PLAYER ERROR]', e.message);
+      current = (current + 1) % RADIO_URLS.length;
+      setTimeout(play, 2000);
+    });
+
+    connection.on(VoiceConnectionStatus.Disconnected, async () => {
+      console.log('[VOICE] Disconnected, reconnect in 5s');
+      try {
+        await Promise.race([
+          entersState(connection, VoiceConnectionStatus.Signalling, 5000),
+          entersState(connection, VoiceConnectionStatus.Connecting, 5000),
+        ]);
+      } catch {
+        setTimeout(startRadio, 5000);
+      }
+    });
+
+    await entersState(connection, VoiceConnectionStatus.Ready, 20000);
+    play();
+
+  } catch (e) {
+    console.error('[START ERROR]', e.message);
     setTimeout(startRadio, 8000);
   }
 }
 
-manager.on('nodeConnect', node => console.log(`Lavalink ${node.options.identifier} connesso`));
-manager.on('nodeError', (node, err) => console.error(`Lavalink ${node.options.identifier} errore`, err.message));
-manager.on('trackStart', (player, track) => console.log(`Track start ${track.title}`));
-manager.on('queueEnd', player => {
-  console.log('Queue end, riavvio radio...');
-  setTimeout(startRadio, 2000);
+client.once('ready', () => {
+  console.log(`Loggato come ${client.user.tag} - FINALE RENDER + UPTIMEROBOT`);
+  startRadio();
 });
 
-client.once('ready', async () => {
-  console.log(`Loggato ${client.user.tag} - LAVALINK EDITION`);
-  manager.init(client.user.id);
-  // aspetta connessione nodi
-  setTimeout(startRadio, 3000);
-});
+// Watchdog ogni 30s se cade
+setInterval(() => {
+  if (!connection || connection.state.status === VoiceConnectionStatus.Destroyed || connection.state.status === VoiceConnectionStatus.Disconnected) {
+    console.log('[WATCHDOG] Riconnessione');
+    startRadio();
+  }
+}, 30000);
 
 client.login(TOKEN);
