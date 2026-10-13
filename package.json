@@ -1,6 +1,7 @@
 {
-  "name": "radio105-link-nuovo",
-  "version": "2.0.0",
+  "name": "radio105-definitiva",
+  "version": "3.0.0",
+  "description": "Radio 105 Discord bot definitiva - link verificato",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
